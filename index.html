@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iBeacon Monitor</title>
+<style>
+:root{
+  --ground:#0e1216; --panel:#161c22; --rule:#252e37;
+  --text:#dfe5ec; --dim:#7a8794; --accent:#4fb3a5; --warn:#c9713f;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);
+  font:13px/1.45 ui-sans-serif,system-ui,"Hiragino Sans","Noto Sans JP",sans-serif}
+
+header{position:sticky;top:0;z-index:5;background:var(--panel);
+  border-bottom:1px solid var(--rule);padding:10px 14px;
+  display:flex;flex-wrap:wrap;gap:18px;align-items:baseline}
+h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.stat{display:flex;gap:6px;align-items:baseline}
+.stat b{font:600 17px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums}
+.stat span{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+#link{margin-left:auto;display:flex;gap:7px;align-items:center;color:var(--dim);font-size:11px}
+#dot{width:7px;height:7px;border-radius:50%;background:#c05b4d}
+#dot.up{background:var(--accent);box-shadow:0 0 7px var(--accent)}
+
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  padding:8px 14px;border-bottom:1px solid var(--rule)}
+label{color:var(--dim);display:flex;gap:6px;align-items:center;font-size:11px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+button{background:transparent;border:1px solid var(--rule);color:var(--text);
+  border-radius:3px;padding:5px 11px;cursor:pointer;
+  font-size:13px;line-height:1.45;font-family:ui-sans-serif,system-ui,"Hiragino Sans","Noto Sans JP",sans-serif}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.35;cursor:default}
+button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#0e1216}
+#connect{border-color:var(--accent);color:var(--accent)}
+.sep{width:1px;height:20px;background:var(--rule)}
+.group{border:1px solid var(--rule);border-radius:4px;padding:4px 10px;display:flex;align-items:center;gap:8px}
+.group label{padding:0}
+#unsupported{display:none;background:#241a12;color:var(--warn);padding:8px 14px;font-size:12px}
+
+table{width:100%;border-collapse:collapse}
+th{position:sticky;top:81px;background:var(--panel);color:var(--dim);text-align:left;
+  font:500 10px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.1em;text-transform:uppercase;
+  padding:8px 10px;border-bottom:1px solid var(--rule);cursor:pointer;white-space:nowrap;user-select:none}
+th[aria-sort]{color:var(--accent)}
+th[aria-sort]::after{content:" ▲";font-size:9px}
+th[aria-sort="descending"]::after{content:" ▼"}
+td{padding:6px 10px;border-bottom:1px solid #1b2229;vertical-align:middle;
+  font-variant-numeric:tabular-nums}
+td.addr,td.uuid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;white-space:nowrap}
+td.comment{cursor:pointer;color:var(--dim);min-width:120px}
+td.comment.has-text{color:var(--text)}
+td.comment:hover{color:var(--accent)}
+.age{color:var(--dim);font-size:11px}
+.empty{padding:56px 20px;color:var(--dim);text-align:center}
+footer{position:fixed;right:10px;bottom:8px;color:var(--dim);font-size:10.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>iBeacon Monitor</h1>
+  <div class="stat"><b id="s-dev">0</b><span>デバイス</span></div>
+  <div class="stat"><b id="s-pps">0</b><span>pkt/s</span></div>
+  <div class="stat"><b id="s-tot">0</b><span>パケット</span></div>
+  <div id="link"><i id="dot"></i><span id="linktxt">未接続</span></div>
+</header>
+
+<div id="unsupported">このブラウザは Web Serial に対応していません。Chrome または Edge（デスクトップ）でお使いください。</div>
+
+<div class="controls">
+  <button id="connect">ボードに接続</button>
+  <button id="disconnect" disabled
+          title="シリアルポートを閉じます。受信も止まり、ボード側は取りこぼしを始めます">切断</button>
+  <div class="sep"></div>
+  <div class="group"><label>RSSI 下限 <input type="range" id="thr" min="-100" max="-30" value="-100">
+    <b class="mono" id="thrv">-100</b></label></div>
+  <div class="group"><label><input type="checkbox" id="uuidfilter" checked> 登録UUIDのみ表示</label></div>
+  <div class="group"><label><input type="checkbox" id="logcheck"> ログ保存</label>
+    <span id="logpath" class="age"></span></div>
+  <div class="group"><label title="ブラウザのタブが表に出ている間だけ、画面/システムの自動スリープを防ぎます。タブを裏に回す・最小化すると効果が切れます">
+    <input type="checkbox" id="wakecheck"> スリープ防止</label></div>
+  <div class="sep"></div>
+  <button id="exportcomments" title="コメントを iBeacon_monitor_comment.txt に書き出します">コメント書き出し</button>
+  <button id="importcomments" title="iBeacon_monitor_comment.txt を読み込みます">コメント読み込み</button>
+  <input type="file" id="importfile" accept=".txt" style="display:none">
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <button id="pause" aria-pressed="false"
+            title="画面の更新だけを止めます。受信は続きます（切断はポートを閉じます）">表示を停止</button>
+    <button id="clear">一覧をクリア</button>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th data-k="uuidStr">UUID</th>
+      <th data-k="major">Major</th>
+      <th data-k="minor">Minor</th>
+      <th data-k="rssi" aria-sort="descending">RSSI</th>
+      <th data-k="lastSeen">最終検出</th>
+      <th data-k="comment">コメント</th>
+      <th data-k="addr">BD Address</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="empty" id="empty">まだ iBeacon を検出していません。</div>
+
+<footer>iBeacon Monitor — Ver.1.08SF</footer>
+
+<script>
+"use strict";
+
+// ---------- 対象UUID一覧（BeaconMonitor Ver.1.5 と同一。末尾3バイトはワイルドカード） ----------
+function prefix26(uuidNoDash){
+  return uuidNoDash.replace(/-/g, "").toLowerCase().slice(0, 26);
+}
+const TARGET_UUID_PREFIXES = [
+  prefix26("544f594f-4e49-4353-8133-7236216bb10b"), // (元のターゲット)
+  prefix26("53544152-4A50-4E40-8154-2631935EB10B"), // スター精密
+  prefix26("404B4F57-412D-4E53-8148-4467780E0001"), // 光和NS
+  prefix26("5368696D-6164-4475-A664-4E69734D656D"), // 島津エステック
+  prefix26("5349474e-544c-4540-8136-8016691eba1b"), // サイントル
+  prefix26("00000000-0000-0000-0000-A06610AF0829"), // JR東日本コンサルタンツ
+  prefix26("54422D65-7965-4020-8136-8418200EBA1B"), // ティビーアイ
+  prefix26("81D7FDC5-70B7-4475-821D-14E9F2312FCA"), // ウネリー
+  prefix26("8E40B353-D556-433B-96A2-B4051B1E20E4"), // 北陸電気工業
+  prefix26("54396336-524F-4355-0000-016BCF216FFF"), // JR九州
+].map(p => p.toLowerCase());
+
+function hexToBytes(hex){
+  const n = hex.length >> 1;
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+
+// AD構造を走査し、Apple(0x004C) Manufacturer Data 内の iBeacon(0x02,0x15) を探す。
+function parseIBeacon(payloadHex){
+  const b = hexToBytes(payloadHex);
+  let i = 0;
+  while (i < b.length){
+    const len = b[i];
+    if (len === 0 || i + 1 + len > b.length) break;
+    const adType = b[i + 1];
+    if (adType === 0xFF){
+      const mdStart = i + 2;
+      const mdLen = len - 1;
+      if (mdLen >= 2){
+        const companyId = b[mdStart] | (b[mdStart + 1] << 8);
+        if (companyId === 0x004C){
+          const sub = b.slice(mdStart + 2, mdStart + mdLen);
+          if (sub.length >= 22 && sub[0] === 0x02 && sub[1] === 0x15){
+            const uuidBytes = sub.slice(2, 18);
+            const major = (sub[18] << 8) | sub[19];
+            const minor = (sub[20] << 8) | sub[21];
+            const uuidHex = Array.from(uuidBytes).map(x => x.toString(16).padStart(2, "0")).join("");
+            return { uuidHex, major, minor };
+          }
+        }
+      }
+    }
+    i += len + 1;
+  }
+  return null;
+}
+function formatUuid(uuidHex){
+  return `${uuidHex.slice(0,8)}-${uuidHex.slice(8,12)}-${uuidHex.slice(12,16)}-${uuidHex.slice(16,20)}-${uuidHex.slice(20,32)}`;
+}
+function matchesTarget(uuidHex){
+  return TARGET_UUID_PREFIXES.includes(uuidHex.slice(0, 26));
+}
+
+// ---------- コメント永続化（localStorage、BD Address単位） ----------
+const COMMENTS_KEY = "ibeacon-monitor-comments";
+let comments = {};
+try { comments = JSON.parse(localStorage.getItem(COMMENTS_KEY) || "{}"); } catch { comments = {}; }
+function saveComments(){
+  try { localStorage.setItem(COMMENTS_KEY, JSON.stringify(comments)); } catch {}
+}
+// BD Address は大文字/小文字どちらで書かれていても同じデバイスとして扱う
+// （コメントの内部キーは常に大文字に正規化する）
+function normAddr(addr){ return String(addr).trim().toUpperCase(); }
+
+// ---------- コメントのTXT書き出し/読み込み（別PCへの持ち出し用） ----------
+// フォーマット: 1行に "BD Address<TAB>コメント"。
+//   - 行頭が # の行はコメント（無視）として扱う
+//   - 空行は無視する
+//   - BD Address の大文字/小文字はどちらでも良い（内部で正規化して照合する）
+const COMMENT_FILE_NAME = "iBeacon_monitor_comment.txt";
+function escapeCommentField(s){ return String(s).replace(/[\t\r\n]/g, " "); }
+
+function exportCommentsToTxt(){
+  const lines = [
+    "# iBeacon Monitor コメント一覧",
+    "# 書式: BD Address<TAB>コメント   例) AA:BB:CC:DD:EE:FF\tロビーの入口",
+    "# 行頭が # の行と空行は読み込み時に無視されます。BD Address は大文字/小文字どちらでも構いません。",
+  ];
+  for (const [addr, text] of Object.entries(comments)){
+    if (!text) continue;
+    lines.push(`${escapeCommentField(addr)}\t${escapeCommentField(text)}`);
+  }
+  const blob = new Blob([lines.join("\r\n") + "\r\n"], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = COMMENT_FILE_NAME;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importCommentsFromText(text){
+  let count = 0;
+  for (const rawLine of text.split(/\r\n|\n/)){
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;     // 空行・#始まりの行は無視
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    const addr = normAddr(line.slice(0, tab));
+    const comment = line.slice(tab + 1).trim();
+    if (!addr) continue;
+    if (comment) comments[addr] = comment; else delete comments[addr];
+    count++;
+  }
+  saveComments();
+  render();
+  alert(`${count} 件のコメントを読み込みました。`);
+}
+
+// ---------- UUIDごとの行色（ダークテーマ向けに調整した8色。出現順に割り当て） ----------
+const COLOR_PALETTE = [
+  "#3a2020", "#1f2f3f", "#1f3a24", "#3a3418",
+  "#2f223f", "#1f3a36", "#3a2c18", "#2a2e33",
+];
+const uuidColorMap = {};
+let nextColorIdx = 0;
+function colorForUuid(uuidStr){
+  if (!(uuidStr in uuidColorMap)){
+    uuidColorMap[uuidStr] = COLOR_PALETTE[nextColorIdx % COLOR_PALETTE.length];
+    nextColorIdx++;
+  }
+  return uuidColorMap[uuidStr];
+}
+
+// ---------- 状態 ----------
+const devices = new Map(); // addr -> {addr, uuidStr, major, minor, rssi, lastSeen(Date)}
+let totalPackets = 0;          // 「パケット」= 現在の条件(登録UUIDのみ表示 等)に一致した累計件数
+let packetsThisSecond = 0;
+let currentPps = 0;
+let paused = false;
+let sortKey = "rssi", sortDir = "desc";
+
+const $ = id => document.getElementById(id);
+const rowsEl = $("rows"), emptyEl = $("empty");
+
+function fmtTime(d){
+  const p = (n, w=2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(Math.floor(d.getMilliseconds()/10))}`;
+}
+
+function visibleRows(){
+  const thr = parseInt($("thr").value, 10);
+  const list = Array.from(devices.values()).filter(d => d.rssi >= thr);
+  list.sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (sortKey === "lastSeen"){ av = av.getTime(); bv = bv.getTime(); }
+    if (typeof av === "string") { av = av.toLowerCase(); bv = bv.toLowerCase(); }
+    const r = av < bv ? -1 : av > bv ? 1 : 0;
+    return sortDir === "asc" ? r : -r;
+  });
+  return list;
+}
+
+// 画面の描画は一定間隔にまとめる（受信のたびに全行を作り直すと、コメント欄の
+// ダブルクリック中に行ごと作り直されてしまい編集が開けない不具合になる）。
+function render(){
+  const rows = visibleRows();
+  emptyEl.style.display = rows.length ? "none" : "block";
+  rowsEl.innerHTML = "";
+  for (const d of rows){
+    const tr = document.createElement("tr");
+    tr.style.background = colorForUuid(d.uuidStr);
+    const commentText = comments[normAddr(d.addr)] || "";
+    tr.innerHTML = `
+      <td class="uuid">${d.uuidStr}</td>
+      <td>${d.major}</td>
+      <td>${d.minor}</td>
+      <td>${d.rssi} dBm</td>
+      <td>${fmtTime(d.lastSeen)}</td>
+      <td class="comment${commentText ? " has-text" : ""}" data-addr="${d.addr}">${commentText || "（ダブルクリックで編集）"}</td>
+      <td class="addr">${d.addr}</td>`;
+    rowsEl.appendChild(tr);
+  }
+  $("s-dev").textContent = rows.length < devices.size ? `${rows.length} / ${devices.size}` : String(devices.size);
+  $("s-tot").textContent = totalPackets;
+  $("s-pps").textContent = currentPps;
+}
+setInterval(() => { if (!paused) render(); }, 250);
+setInterval(() => { currentPps = packetsThisSecond; packetsThisSecond = 0; }, 1000);
+
+rowsEl.addEventListener("dblclick", e => {
+  const td = e.target.closest("td.comment");
+  if (!td) return;
+  const addr = normAddr(td.dataset.addr);
+  const current = comments[addr] || "";
+  const next = prompt(`BD Address: ${td.dataset.addr}\nコメントを入力してください:`, current);
+  if (next !== null){
+    if (next === "") delete comments[addr]; else comments[addr] = next;
+    saveComments();
+    render();
+  }
+});
+
+document.querySelectorAll("th[data-k]").forEach(th => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if (sortKey === k) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else { sortKey = k; sortDir = "asc"; }
+    document.querySelectorAll("th[data-k]").forEach(o => o.removeAttribute("aria-sort"));
+    th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+    render();
+  });
+});
+
+$("thr").addEventListener("input", () => { $("thrv").textContent = $("thr").value; render(); });
+
+$("pause").addEventListener("click", e => {
+  paused = !paused;
+  e.target.setAttribute("aria-pressed", String(paused));
+  e.target.textContent = paused ? "表示を再開" : "表示を停止";
+  if (!paused) render();
+});
+
+$("clear").addEventListener("click", () => {
+  devices.clear();
+  totalPackets = 0;
+  render();
+});
+
+$("exportcomments").addEventListener("click", exportCommentsToTxt);
+$("importcomments").addEventListener("click", () => $("importfile").click());
+$("importfile").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  e.target.value = ""; // 同じファイルを連続で選び直せるようにする
+  if (!file) return;
+  importCommentsFromText(await file.text());
+});
+
+// ---------- CSVログ（File System Access API） ----------
+// 受信のたびに毎回ファイルを開閉すると、失敗時に Chrome の一時ファイル(*.crswap)が
+// 閉じられずゴミとして残ってしまう。行はいったんメモリに溜め、1秒ごとにまとめて
+// 1回だけ開いて書いて閉じる方式にする(開閉の回数そのものを減らし、失敗の機会を減らす)。
+const LOG_HEADER = ["受信日時", "UUID", "Major", "Minor", "RSSI", "BD_Address"];
+let logDirHandle = null;
+let logEnabled = false;
+let pendingLogRows = [];       // 書き込み待ちの行(文字列)
+let logFlushChain = Promise.resolve();
+
+function todayStr(){
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}`;
+}
+function csvEscape(v){
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function queueLogRow(row){
+  pendingLogRows.push(row.map(csvEscape).join(","));
+}
+
+// フォルダ内に残っている *.crswap（前回以前の異常終了などで閉じ切れなかった
+// 一時ファイル）を掃除する。フォルダを選び直すたびに実行する。
+async function cleanupStrayCrswap(dirHandle){
+  try {
+    for await (const [name, handle] of dirHandle.entries()){
+      if (handle.kind === "file" && name.endsWith(".crswap")){
+        try { await dirHandle.removeEntry(name); } catch (e) { console.error("crswap削除失敗:", name, e); }
+      }
+    }
+  } catch (e) { console.error("crswap掃除エラー:", e); }
+}
+
+// 溜まっている行をまとめてファイルへ書き込む。書き込みの成否に関わらず、
+// 開いた writable は必ず close する（開けっぱなしを残さないため finally で保証）。
+async function flushLogRows(){
+  logFlushChain = logFlushChain.then(async () => {
+    if (!logDirHandle || pendingLogRows.length === 0) return;
+    const rows = pendingLogRows;
+    pendingLogRows = [];
+    let writable = null;
+    try {
+      const name = `beacon_log_${todayStr()}.csv`;
+      let fileHandle, existed = true;
+      try { fileHandle = await logDirHandle.getFileHandle(name, { create:false }); }
+      catch { existed = false; fileHandle = await logDirHandle.getFileHandle(name, { create:true }); }
+      const file = await fileHandle.getFile();
+      const position = file.size;
+      writable = await fileHandle.createWritable({ keepExistingData: true });
+      let text = "";
+      if (!existed) text += "\uFEFF" + LOG_HEADER.map(csvEscape).join(",") + "\r\n";
+      text += rows.map(r => r + "\r\n").join("");
+      await writable.write({ type: "write", position, data: text });
+    } catch (e) {
+      console.error("ログ書き込みエラー:", e);
+      pendingLogRows = rows.concat(pendingLogRows); // 失敗した分は次回に回す
+    } finally {
+      if (writable){
+        try { await writable.close(); } catch (e) { console.error("ログファイルclose失敗:", e); }
+      }
+    }
+  });
+  return logFlushChain;
+}
+setInterval(() => { if (logEnabled) flushLogRows(); }, 1000);
+window.addEventListener("beforeunload", () => { if (logEnabled) flushLogRows(); }); // ベストエフォート
+
+$("logcheck").addEventListener("change", async e => {
+  if (e.target.checked){
+    if (!("showDirectoryPicker" in window)){
+      alert("このブラウザは File System Access API に対応していません。Chrome または Edge をお使いください。");
+      e.target.checked = false;
+      return;
+    }
+    if (!logDirHandle){
+      try { logDirHandle = await window.showDirectoryPicker({ mode: "readwrite" }); }
+      catch { e.target.checked = false; return; } // ユーザーがキャンセル
+      cleanupStrayCrswap(logDirHandle); // 過去の残骸を掃除(完了を待たず進めてよい)
+    }
+    logEnabled = true;
+    $("logpath").textContent = `保存先: ${logDirHandle.name}/`;
+  } else {
+    logEnabled = false;
+    flushLogRows(); // OFFにする直前まで溜まっていた分は書き切ってから止める
+  }
+});
+
+// ---------- スリープ防止（Screen Wake Lock API） ----------
+// 効果はタブが表に出ている間のみ。最小化・タブ切替で自動的に解除される点に注意。
+let wakeLock = null;
+async function acquireWakeLock(){
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { console.error(e); }
+}
+$("wakecheck").addEventListener("change", async e => {
+  if (e.target.checked){
+    if (!("wakeLock" in navigator)){
+      alert("このブラウザは Wake Lock API に対応していません。");
+      e.target.checked = false;
+      return;
+    }
+    await acquireWakeLock();
+  } else {
+    try { await wakeLock?.release(); } catch {}
+    wakeLock = null;
+  }
+});
+document.addEventListener("visibilitychange", async () => {
+  if ($("wakecheck").checked && document.visibilityState === "visible") await acquireWakeLock();
+});
+
+// ---------- Web Serial 接続 ----------
+// iBeacon の UUID/Major/Minor はすべて一次アドバタイズパケットに含まれ、
+// SCAN_RSP を使わないため、アクティブ/パッシブの違いはこのアプリの受信内容に
+// 影響しない。常にパッシブスキャン（'p'）で接続する。
+const ESP32C3 = { usbVendorId: 0x303a, usbProductId: 0x1001 };
+let port = null, reader = null, writer = null, keepReading = false;
+
+if (!("serial" in navigator)){
+  $("unsupported").style.display = "block";
+  $("connect").disabled = true;
+}
+
+async function rememberedPort(){
+  try {
+    const ports = await navigator.serial.getPorts();
+    return ports.find(p => {
+      const i = p.getInfo();
+      return i.usbVendorId === ESP32C3.usbVendorId && i.usbProductId === ESP32C3.usbProductId;
+    }) ?? null;
+  } catch { return null; }
+}
+
+function setLink(text){ $("linktxt").textContent = text; }
+
+async function connect(known){
+  try {
+    port = known ?? await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200, bufferSize: 16384 });
+    try { await port.setSignals({ dataTerminalReady: true, requestToSend: false }); } catch {}
+
+    $("dot").classList.add("up");
+    setLink("受信中");
+    $("connect").disabled = true;
+    $("disconnect").disabled = false;
+
+    keepReading = true;
+    writer = port.writable.getWriter();
+    await writer.write(new TextEncoder().encode("rp")); // reset + passive scan 固定
+    readLoop();
+  } catch (e) {
+    setLink(e.name === "NotFoundError" ? "ポートが選択されませんでした" : "接続に失敗しました: " + e.message);
+  }
+}
+
+async function readLoop(){
+  const dec = new TextDecoder();
+  let buf = "";
+  reader = port.readable.getReader();
+  try {
+    while (keepReading){
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0){
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line.startsWith("{")) handleLine(line);
+      }
+      if (buf.length > 8192) buf = "";
+    }
+  } catch (e) {
+    setLink("受信エラー: " + e.message);
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
+async function disconnect(){
+  keepReading = false;
+  try { await reader?.cancel(); } catch {}
+  try { writer?.releaseLock(); } catch {}
+  try { await port?.close(); } catch {}
+  port = null; writer = null;
+  $("dot").classList.remove("up");
+  setLink("未接続");
+  $("connect").disabled = false;
+  $("disconnect").disabled = true;
+}
+
+function handleLine(line){
+  let m;
+  try { m = JSON.parse(line); } catch { return; }
+  if (m._) return;               // stat / hello は今回のモニタでは使わない
+  if (typeof m.a !== "string" || typeof m.p !== "string") return;
+
+  const ib = parseIBeacon(m.p);
+  if (!ib) return;
+  if ($("uuidfilter").checked && !matchesTarget(ib.uuidHex)) return;
+
+  const uuidStr = formatUuid(ib.uuidHex);
+  const now = new Date();
+  devices.set(m.a, {
+    addr: m.a, uuidStr, major: ib.major, minor: ib.minor,
+    rssi: m.r, lastSeen: now,
+  });
+  totalPackets++;
+  packetsThisSecond++;
+
+  if (logEnabled){
+    const p = n => String(n).padStart(2, "0");
+    const ts = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+    queueLogRow([ts, uuidStr, ib.major, ib.minor, m.r, m.a]);
+  }
+  // 画面の書き換えは setInterval 側でまとめて行う（一時停止・ダブルクリック編集を壊さないため）
+}
+
+$("connect").addEventListener("click", () => connect());
+$("disconnect").addEventListener("click", disconnect);
+navigator.serial?.addEventListener("disconnect", () => { if (port) disconnect(); });
+
+window.addEventListener("DOMContentLoaded", async () => {
+  const p = await rememberedPort();
+  if (p) connect(p);
+});
+</script>
+</body>
+</html>
