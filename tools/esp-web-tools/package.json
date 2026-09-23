@@ -1,0 +1,16 @@
+{
+  "name": "esp-web-tools-bundle",
+  "private": true,
+  "type": "module",
+  "description": "Bundles esp-web-tools into one self-contained ESM file for _site/. The workshop must not depend on a CDN being reachable.",
+  "//overrides": "esp-web-tools 10.4.0 imports @material/web internals such as button/internal/text-styles.js. 2.5.0 renamed those to *.cssresult.js, so esp-web-tools' own ^2.2.0 range resolves to a version that will not bundle. Pin until esp-web-tools catches up.",
+  "dependencies": {
+    "esp-web-tools": "10.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "overrides": {
+    "@material/web": "2.4.0"
+  }
+}

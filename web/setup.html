@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ファームウェアの書き込み</title>
+<style>
+:root{
+  --ground:#0e1216; --panel:#161c22; --rule:#252e37;
+  --text:#dfe5ec; --dim:#7a8794; --accent:#4fb3a5; --warn:#c9713f;
+  --esp-tools-button-color:#4fb3a5;
+  --esp-tools-button-text-color:#0e1216;
+  --esp-tools-button-border-radius:3px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);
+  font:14px/1.6 ui-sans-serif,system-ui,"Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:680px;margin:0 auto;padding:32px 20px 64px}
+h1{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  margin:0 0 4px;color:var(--text)}
+.sub{color:var(--dim);font-size:13px;margin:0 0 36px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+.step{border:1px solid var(--rule);border-radius:4px;background:var(--panel);
+  padding:20px 22px;margin:0 0 16px}
+.step h2{margin:0 0 6px;font-size:15px;font-weight:600}
+.step p{margin:0 0 14px;color:var(--dim);font-size:13px}
+.step p:last-child{margin-bottom:0}
+
+a.button,button.button{display:inline-block;text-decoration:none;font:inherit;font-size:14px;
+  font-weight:500;padding:10px 24px;border-radius:3px;cursor:pointer;
+  background:var(--accent);color:#0e1216;border:none}
+a.button:hover,button.button:hover{filter:brightness(1.1)}
+a.ghost{display:inline-block;text-decoration:none;padding:10px 24px;border-radius:3px;
+  border:1px solid var(--rule);color:var(--text);font-size:14px}
+a.ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+.fallback{color:var(--warn);font-size:13px;display:block;padding:8px 0}
+.step .after{margin:16px 0 0;font-size:12.5px}
+
+.note{border-left:2px solid var(--rule);padding:2px 0 2px 14px;margin:0 0 22px;
+  color:var(--dim);font-size:12.5px}
+.note b{color:var(--text);font-weight:600}
+.note + .note{margin-top:12px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text)}
+footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--rule);
+  color:var(--dim);font-size:12px}
+footer a{color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="note">シリアルポートは 1 ページしか掴めないため、<b>このページを開いた時点で
+  モニタ側の接続は自動的に解放されます。</b>手動で切断する必要はありません。書き込みが
+  終わってこのページを離れると、モニタは自動で繋ぎ直します。</p>
+
+  <div class="step">
+    <h2>ファームウェアを書き込む</h2>
+    <p>ESP32-C3 の<b>ネイティブ USB ポート</b>（USB-UART ブリッジ側ではありません）を
+    PC に挿してから、下のボタンを押してポートを選択してください。</p>
+    <esp-web-install-button manifest="manifest.json">
+      <button class="button" slot="activate">ボードに書き込む</button>
+      <span class="fallback" slot="unsupported">
+        このブラウザは書き込みに対応していません。デスクトップ版の Chrome / Edge を
+        お使いください。
+      </span>
+      <span class="fallback" slot="not-allowed">
+        書き込みには HTTPS または localhost が必要です。
+      </span>
+    </esp-web-install-button>
+    <p class="after">書き込みが終わったらダイアログを閉じてモニタに戻ってください。
+    ボードは再列挙されますが、<b>モニタが自動で繋ぎ直します</b>。</p>
+  </div>
+
+  <p class="note"><b>Windows</b> — 初回接続時に <code>usbser.sys</code> が自動で当たり、
+  デバイスマネージャの「ポート (COM と LPT)」に <code>USB シリアル デバイス (COMx)</code>
+  が出ます。出ない場合は「USB JTAG/serial debug unit」を右クリック →
+  ドライバーの更新 → コンピューターを参照 → 一覧から選択 →
+  <code>USB シリアル デバイス</code> を選んでください。</p>
+
+  <p class="note"><b>macOS</b> — ドライバは不要です。OS 標準の CDC-ACM が担当し、
+  <code>/dev/cu.usbmodem*</code> として現れます。</p>
+
+  <footer>
+    <a href="./">&larr; モニタに戻る</a> ·
+    <span id="build">firmware build: —</span> ·
+    <a href="https://github.com/k-ishino/beacon-monitor-web">source</a>
+  </footer>
+
+</div>
+
+<script type="module" src="esp-web-tools.js"></script>
+<script>
+// モニタのタブにボードを手放すよう頼む。シリアルポートを持てるのは 1 ページだけで、
+// モニタは読み込み時にそれを掴む。したがって別タブに開きっぱなしのモニタが、
+// 書き込みを開始できない最有力の原因になる。到着時とボタン押下時の 2 回送る。
+// 到着時が通常経路、押下時はその間にモニタを開かれた場合の保険。
+let portChannel = null;
+try { portChannel = new BroadcastChannel("ble-monitor-port"); } catch {}
+const releasePort = () => portChannel?.postMessage({ type: "release" });
+
+releasePort();
+document.querySelector("esp-web-install-button")
+  ?.addEventListener("mousedown", releasePort, true);
+
+// 離れるときに返し、モニタ側の抑止を解く。pagehide ならタブを閉じた場合と
+// 他ページへ遷移した場合の両方を拾える。
+addEventListener("pagehide", () => portChannel?.postMessage({ type: "free" }));
+</script>
+<script>
+// このページが書き込むビルドを表示する。ボタンが使う manifest をそのまま読む。
+fetch("manifest.json")
+  .then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then(m => {
+    const v = String(m.version || "");
+    document.getElementById("build").textContent =
+      "firmware build: " + (v.length === 40 ? v.slice(0, 7) : v || "unknown");
+  })
+  .catch(() => {
+    document.getElementById("build").textContent = "firmware build: manifest.json が見つかりません";
+  });
+</script>
+</body>
+</html>
