@@ -1,0 +1,200 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - 'README*.md'
+      - '.gitignore'
+  pull_request:
+  workflow_dispatch:
+
+env:
+  SKETCH: ble_scan_usb
+  # ボード設定は IDE のドロップダウンではなくここで固定する。当日「USB CDC On
+  # Boot」を入れ忘れる、という事故を起こさないため。
+  FQBN: esp32:esp32:esp32c3:CDCOnBoot=cdc,DebugLevel=none,FlashSize=4M,PartitionScheme=default
+
+  # 以下は全てバージョン固定。arduino-esp32 やライブラリの新版で当日のビルドが
+  # 突然壊れないようにするため。上げるときは意図的に行うこと。
+  ESP32_CORE:  3.3.11     # espressif/arduino-esp32
+  NIMBLE_VER:  2.5.1      # h2zero/NimBLE-Arduino
+  ESPTOOL_REQ: "esptool~=4.8"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve build identity
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          {
+            echo "BUILD_SHA=$sha"
+            echo "BUILD_SHORT=$(echo "$sha" | cut -c1-7)"
+            echo "BUILD_REF=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          } >> "$GITHUB_ENV"
+
+      - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: "1.x"
+
+      # esp32 コアは約 1 GB あり、インストールに数分かかる。キャッシュしないと
+      # push のたびにその時間を払うことになる。
+      - name: Cache Arduino data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-${{ runner.os }}-esp32-${{ env.ESP32_CORE }}-nimble-${{ env.NIMBLE_VER }}
+
+      - name: Install core and libraries
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install "esp32:esp32@${ESP32_CORE}"
+          arduino-cli lib install "NimBLE-Arduino@${NIMBLE_VER}"
+          arduino-cli board details -b esp32:esp32:esp32c3
+          arduino-cli core list
+          arduino-cli lib list
+
+      # ボードが「自分はどのコミットで動いているか」を言えなければ、モニタは
+      # 最新のボードと古いボードを区別できない。
+      - name: Stamp the build into the firmware
+        run: |
+          set -euo pipefail
+          cat > "${SKETCH}/build_info.h" <<EOF
+          #pragma once
+          // CI がコンパイル直前に生成する。リポジトリには入れない。
+          #define FW_BUILD "${BUILD_SHORT}"
+          #define FW_RUN ${GITHUB_RUN_NUMBER}
+          EOF
+          cat "${SKETCH}/build_info.h"
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --output-dir build \
+            --warnings all \
+            "$SKETCH"
+
+      - name: Merge into a single flashable image
+        run: |
+          set -euo pipefail
+          pip install "${ESPTOOL_REQ}"
+          BOOT_APP0=~/.arduino15/packages/esp32/hardware/esp32/${ESP32_CORE}/tools/partitions/boot_app0.bin
+          test -f "$BOOT_APP0" || { echo "boot_app0.bin not found at $BOOT_APP0"; exit 1; }
+          esptool.py --chip esp32c3 merge_bin -o build/firmware-merged.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x0     build/${SKETCH}.ino.bootloader.bin \
+            0x8000  build/${SKETCH}.ino.partitions.bin \
+            0xe000  "$BOOT_APP0" \
+            0x10000 build/${SKETCH}.ino.bin
+
+      - name: Report flash and RAM usage
+        run: |
+          ls -l build/*.bin
+          echo "### Firmware size" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lh build/firmware-merged.bin build/${SKETCH}.ino.bin >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # 書き込みページ(setup.html)で ESP Web Tools が読む manifest。
+      - name: Write ESP Web Tools manifest
+        run: |
+          cat > build/manifest.json <<JSON
+          {
+            "name": "iBeacon Monitor",
+            "version": "${{ github.sha }}",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [ { "path": "firmware-merged.bin", "offset": 0 } ]
+              }
+            ]
+          }
+          JSON
+
+      # モニタ自身の版チェック用(manifest.jsonとは別。あちらはESP Web Toolsのスキーマ)。
+      - name: Write build.json
+        run: |
+          set -euo pipefail
+          cat > build/build.json <<EOF
+          {
+            "build": "${BUILD_SHORT}",
+            "run": ${GITHUB_RUN_NUMBER},
+            "sha": "${BUILD_SHA}",
+            "ref": "${BUILD_REF}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat build/build.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # esp-web-tools は bare specifier を含む未バンドルの ESM で配布されるため、
+      # バンドルが必要。
+      - name: Bundle ESP Web Tools
+        run: |
+          set -euo pipefail
+          npm --prefix tools/esp-web-tools ci
+          tools/esp-web-tools/node_modules/.bin/esbuild \
+            tools/esp-web-tools/node_modules/esp-web-tools/dist/install-button.js \
+            --bundle --format=esm --minify --target=es2022 \
+            --outfile=web/esp-web-tools.js
+          ls -lh web/esp-web-tools.js
+
+      - name: Assemble _site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp web/index.html web/setup.html web/esp-web-tools.js _site/
+          cp build/firmware-merged.bin build/manifest.json build/build.json _site/
+          test -f _site/firmware-merged.bin
+          test -f _site/manifest.json
+          test -f _site/build.json
+          ls -lh _site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/firmware-merged.bin
+            build/manifest.json
+
+  deploy:
+    # PR では公開しない。ビルドと成果物の確認だけ行う。
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
